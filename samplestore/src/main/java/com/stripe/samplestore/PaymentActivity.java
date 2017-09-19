@@ -1,15 +1,18 @@
 package com.stripe.samplestore;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.Size;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.app.FragmentTransaction;
+import android.support.v4.content.LocalBroadcastManager;
 import android.support.v7.app.AlertDialog;
-import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -27,19 +30,28 @@ import com.google.android.gms.wallet.MaskedWallet;
 import com.google.android.gms.wallet.fragment.SupportWalletFragment;
 import com.google.android.gms.wallet.fragment.WalletFragmentStyle;
 import com.jakewharton.rxbinding.view.RxView;
+import com.stripe.android.PaymentConfiguration;
+import com.stripe.android.PaymentSession;
+import com.stripe.android.PaymentSessionConfig;
+import com.stripe.android.PaymentSessionData;
 import com.stripe.android.Stripe;
+import com.stripe.android.model.Address;
 import com.stripe.android.model.Card;
+import com.stripe.android.model.ShippingInformation;
+import com.stripe.android.model.ShippingMethod;
 import com.stripe.android.model.Source;
 import com.stripe.android.model.SourceCardData;
 import com.stripe.android.model.SourceParams;
 import com.stripe.android.model.StripePaymentSource;
 import com.stripe.android.view.CardInputWidget;
+import com.stripe.samplestore.service.StripeService;
 import com.stripe.wrap.pay.AndroidPayConfiguration;
 import com.stripe.wrap.pay.activity.StripeAndroidPayActivity;
 import com.stripe.wrap.pay.utils.CartContentException;
 import com.stripe.wrap.pay.utils.CartManager;
 import com.stripe.wrap.pay.utils.PaymentUtils;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Locale;
 import java.util.concurrent.Callable;
@@ -52,11 +64,27 @@ import rx.functions.Action1;
 import rx.schedulers.Schedulers;
 import rx.subscriptions.CompositeSubscription;
 
+import static com.stripe.android.view.PaymentFlowActivity.EVENT_SHIPPING_INFO_PROCESSED;
+import static com.stripe.android.view.PaymentFlowActivity.EVENT_SHIPPING_INFO_SUBMITTED;
+import static com.stripe.android.view.PaymentFlowActivity.EXTRA_DEFAULT_SHIPPING_METHOD;
+import static com.stripe.android.view.PaymentFlowActivity.EXTRA_IS_SHIPPING_INFO_VALID;
+import static com.stripe.android.view.PaymentFlowActivity.EXTRA_SHIPPING_INFO_DATA;
+import static com.stripe.android.view.PaymentFlowActivity.EXTRA_VALID_SHIPPING_METHODS;
+
 public class PaymentActivity extends StripeAndroidPayActivity {
 
     private static final String TOTAL_LABEL = "Total:";
     private static final Locale LOC = Locale.US;
 
+    /*
+     * Change this to your publishable key.
+     *
+     * You can get your key here: https://dashboard.stripe.com/account/apikeys
+     */
+    private static final String PUBLISHABLE_KEY =
+            "pk_test_GM1935gITkCi5UwpnUFIhXP8";
+
+    private BroadcastReceiver mBroadcastReceiver;
     private CartManager mCartManager;
     private CardInputWidget mCardInputWidget;
     private CompositeSubscription mCompositeSubscription;
@@ -76,6 +104,9 @@ public class PaymentActivity extends StripeAndroidPayActivity {
 
     private String mCurrentShippingKey;
     private Button mConfirmPaymentButton;
+    private TextView mEnterShippingInfo;
+
+    private PaymentSession mPaymentSession;
 
     public static Intent createIntent(@NonNull Context context, @NonNull Cart cart) {
         Intent intent = new Intent(context, PaymentActivity.class);
@@ -87,17 +118,18 @@ public class PaymentActivity extends StripeAndroidPayActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_payment);
+        PaymentConfiguration.init(PUBLISHABLE_KEY);
 
         Bundle extras = getIntent().getExtras();
         Cart cart = extras.getParcelable(EXTRA_CART);
         mCartManager = new CartManager(cart);
 
-        mCartItemLayout = (LinearLayout) findViewById(R.id.cart_list_items);
+        mCartItemLayout = findViewById(R.id.cart_list_items);
 
         addCartItems();
         mCompositeSubscription = new CompositeSubscription();
 
-        mCardInputWidget = (CardInputWidget) findViewById(R.id.card_input_widget);
+        mCardInputWidget = findViewById(R.id.card_input_widget);
         mProgressDialogFragment =
                 ProgressDialogFragment.newInstance(R.string.completing_purchase);
 
@@ -106,7 +138,7 @@ public class PaymentActivity extends StripeAndroidPayActivity {
         mAndroidPayButtonContainer = findViewById(R.id.android_pay_button_container);
         mAndroidPayChangeDetailsContainer = findViewById(R.id.android_pay_change_container);
 
-        Button cancelChangeDetails = (Button) findViewById(R.id.btn_android_pay_change_cancel);
+        Button cancelChangeDetails = findViewById(R.id.btn_android_pay_change_cancel);
         RxView.clicks(cancelChangeDetails).subscribe(new Action1<Void>() {
             @Override
             public void call(Void aVoid) {
@@ -121,13 +153,21 @@ public class PaymentActivity extends StripeAndroidPayActivity {
                 attemptPurchaseWithAndroidPay();
             }
         });
-        mTvAndroidPayAddress = (TextView) findViewById(R.id.tv_android_pay_address);
-        mTvAndroidPayCard = (TextView) findViewById(R.id.tv_android_pay_card);
-        mTvOr = (TextView) findViewById(R.id.tv_cart_or);
+        mTvAndroidPayAddress = findViewById(R.id.tv_android_pay_address);
+        mTvAndroidPayCard = findViewById(R.id.tv_android_pay_card);
+        mTvOr = findViewById(R.id.tv_cart_or);
 
-        mConfirmPaymentButton = (Button) findViewById(R.id.btn_purchase);
+        mConfirmPaymentButton = findViewById(R.id.btn_purchase);
+        mConfirmPaymentButton.setEnabled(false);
         updateConfirmPaymentButton();
-
+        mEnterShippingInfo = findViewById(R.id.shipping_info);
+        RxView.clicks(mEnterShippingInfo)
+                .subscribe(new Action1<Void>() {
+                    @Override
+                    public void call(Void aVoid) {
+                        mPaymentSession.presentShippingFlow();
+                    }
+                });
         RxView.clicks(mConfirmPaymentButton)
                 .subscribe(new Action1<Void>() {
                     @Override
@@ -145,10 +185,28 @@ public class PaymentActivity extends StripeAndroidPayActivity {
                         }
                     }
                 });
-
         mStripe = new Stripe(this);
         mAndroidPayDetailsContainer.setVisibility(View.GONE);
         mAndroidPayChangeDetailsContainer.setVisibility(View.GONE);
+        setupPaymentSession();
+        mBroadcastReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                ShippingInformation shippingInformation = intent.getParcelableExtra(EXTRA_SHIPPING_INFO_DATA);
+                Intent shippingInfoProcessedIntent = new Intent(EVENT_SHIPPING_INFO_PROCESSED);
+                if (shippingInformation.getAddress() == null || !shippingInformation.getAddress().getCountry().equals(Locale.US.getCountry())) {
+                    shippingInfoProcessedIntent.putExtra(EXTRA_IS_SHIPPING_INFO_VALID, false);
+                } else {
+                    ArrayList<ShippingMethod> shippingMethods = getValidShippingMethods(shippingInformation);
+                    shippingInfoProcessedIntent.putExtra(EXTRA_IS_SHIPPING_INFO_VALID, true);
+                    shippingInfoProcessedIntent.putParcelableArrayListExtra(EXTRA_VALID_SHIPPING_METHODS, shippingMethods);
+                    shippingInfoProcessedIntent.putExtra(EXTRA_DEFAULT_SHIPPING_METHOD, shippingMethods.get(0));
+                }
+                LocalBroadcastManager.getInstance(PaymentActivity.this).sendBroadcast(shippingInfoProcessedIntent);
+            }
+        };
+        LocalBroadcastManager.getInstance(this).registerReceiver(mBroadcastReceiver,
+                new IntentFilter(EVENT_SHIPPING_INFO_SUBMITTED));
     }
 
     /*
@@ -299,6 +357,12 @@ public class PaymentActivity extends StripeAndroidPayActivity {
             mCompositeSubscription.unsubscribe();
             mCompositeSubscription = null;
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        mPaymentSession.handlePaymentData(requestCode, resultCode, data);
     }
 
     private void updatePaymentInformation(@NonNull MaskedWallet maskedWallet) {
@@ -602,6 +666,62 @@ public class PaymentActivity extends StripeAndroidPayActivity {
         InputMethodManager inputManager =
                 (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         inputManager.toggleSoftInput(0, 0);
+    }
+
+    private void setupPaymentSession() {
+        mPaymentSession = new PaymentSession(this);
+        mPaymentSession.init(new PaymentSession.PaymentSessionListener() {
+            @Override
+            public void onCommunicatingStateChanged(boolean isCommunicating) {
+                if (isCommunicating) {
+                    mProgressDialogFragment.show(getSupportFragmentManager(), "progress");
+                } else {
+                    mProgressDialogFragment.dismiss();
+                }
+            }
+
+            @Override
+            public void onError(int errorCode, @Nullable String errorMessage) {
+                displayError(errorMessage);
+            }
+
+            @Override
+            public void onPaymentSessionDataChanged(@NonNull PaymentSessionData data) {
+                if (data.getShippingMethod() != null) {
+                    mEnterShippingInfo.setText(data.getShippingMethod().getLabel());
+                }
+                if (data.isPaymentReadyToCharge()) {
+                    mConfirmPaymentButton.setEnabled(true);
+                }
+
+            }
+        }, new PaymentSessionConfig.Builder()
+                .setPrepopulatedShippingInfo(getExampleShippingInfo())
+                .build());
+
+
+    }
+
+    private ArrayList<ShippingMethod> getValidShippingMethods(ShippingInformation shippingInformation) {
+        ArrayList<ShippingMethod> shippingMethods = new ArrayList<>();
+        shippingMethods.add(new ShippingMethod("UPS Ground", "ups-ground", "Arrives in 3-5 days", 0, "USD"));
+        shippingMethods.add(new ShippingMethod("FedEx", "fedex", "Arrives tomorrow", 599, "USD"));
+        if (shippingInformation.getAddress() != null && shippingInformation.getAddress().getPostalCode().equals("94110")) {
+            shippingMethods.add(new ShippingMethod("1 Hour Courier", "courier", "Arrives in the next hour", 1099, "USD"));
+        }
+        return shippingMethods;
+    }
+
+    private ShippingInformation getExampleShippingInfo() {
+        Address address = new Address.Builder()
+                .setCity("San Francisco")
+                .setCountry("US")
+                .setLine1("123 Market St")
+                .setLine2("#345")
+                .setPostalCode("94110")
+                .setState("CA")
+                .build();
+        return new ShippingInformation(address, "Fake Name", "6504604645");
     }
 
 }
