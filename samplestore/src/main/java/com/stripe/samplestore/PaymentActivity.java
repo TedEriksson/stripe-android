@@ -158,7 +158,7 @@ public class PaymentActivity extends StripeAndroidPayActivity {
         mTvOr = findViewById(R.id.tv_cart_or);
 
         mConfirmPaymentButton = findViewById(R.id.btn_purchase);
-        mConfirmPaymentButton.setEnabled(false);
+       // mConfirmPaymentButton.setEnabled(false);
         updateConfirmPaymentButton();
         mEnterShippingInfo = findViewById(R.id.shipping_info);
         RxView.clicks(mEnterShippingInfo)
