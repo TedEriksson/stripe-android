@@ -117,7 +117,6 @@ public class PaymentActivity extends AppCompatActivity {
                 ProgressDialogFragment.newInstance(R.string.completing_purchase);
 
         mConfirmPaymentButton = findViewById(R.id.btn_purchase);
-       // mConfirmPaymentButton.setEnabled(false);
         updateConfirmPaymentButton();
         mEnterShippingInfo = findViewById(R.id.shipping_info);
         mEnterPaymentInfo = findViewById(R.id.payment_source);
@@ -145,6 +144,11 @@ public class PaymentActivity extends AppCompatActivity {
 
         mStripe = new Stripe(this);
         setupPaymentSession();
+
+        if (!mPaymentSession.getPaymentSessionData().isPaymentReadyToCharge()) {
+            mConfirmPaymentButton.setEnabled(false);
+        }
+
         mBroadcastReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -164,20 +168,6 @@ public class PaymentActivity extends AppCompatActivity {
         LocalBroadcastManager.getInstance(this).registerReceiver(mBroadcastReceiver,
                 new IntentFilter(EVENT_SHIPPING_INFO_SUBMITTED));
     }
-
-//    /**
-//     * This is where the chargeable Stripe object is returned. You can send the ID of the
-//     * {@link StripePaymentSource} to your server to make a charge.
-//     *
-//     * @param wallet the {@link FullWallet} returned from Google.
-//     * @param paymentSource the {@link StripePaymentSource} with chargeable ID
-//     */
-//    @Override
-//    protected void onStripePaymentSourceReturned(FullWallet wallet,
-//                                                 StripePaymentSource paymentSource) {
-//        super.onStripePaymentSourceReturned(wallet, paymentSource);
-//        completePurchase(paymentSource.getId());
-//    }
 
     /*
      * Cleaning up all Rx subscriptions in onDestroy.
